@@ -1,62 +1,54 @@
-mod graph;
-mod layers;
-mod losses;
-mod optimizers;
-mod models;
-mod utils;
-
+pub mod layer;
+pub mod optimizer;
+pub mod op;
+pub mod tensor;
+pub mod variable;
+pub mod node;
+pub mod graph;
+use crate::tensor::Tensor;
+use crate::variable::Variable;
 use std::rc::Rc;
-use crate::graph::Node;
-use crate::layers::{linear::Linear, activation::relu::ReLU};
-use crate::losses::cross_entropy::CrossEntropyLoss;
-use crate::layers::layer::Layer;
-use crate::optimizers::optimizer::Optimizer;
-use crate::optimizers::sgd::SGD;
-use crate::losses::loss::Loss;
-use ndarray::ArrayD;
+use crate::layer::{Layer, Sequential, Dense};
+use crate::optimizer::{Optimizer, SGD};
+use crate::op::{Op, MeanSquaredError};
+use crate::graph::ComputationGraph;
+use ndarray::Array2;
+use rand::Rng;
 
-fn main() {
-    // Create x and y to be a simple linear function [y = 2x + 1]
-    let input_dim = 1;
-    let hidden_dim = 100;
-    let output_dim = 1;
+fn generate_linear_noise(num_samples: usize, slope: f32, intercept: f32, noise_std: f32) -> (Tensor, Tensor) {
+    let mut rng = rand::thread_rng();
+    let x: Vec<f32> = (0..num_samples).map(|i| i as f32 / num_samples as f32).collect();
+    let y: Vec<f32> = x.iter()
+        .map(|&xi| slope * xi + intercept + rng.gen_range(-noise_std..noise_std))
+        .collect();
 
-    // Input data
-    let x = Rc::new(Node::new_leaf(ArrayD::from_shape_vec((5, 1), vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap()));
-    let y = Rc::new(Node::new_leaf(ArrayD::from_shape_vec((5, 1), vec![3.0, 5.0, 7.0, 9.0, 11.0]).unwrap()));
+    let x_tensor = Tensor::new_f32(Array2::from_shape_vec((num_samples, 1), x).unwrap().into_dyn());
+    let y_tensor = Tensor::new_f32(Array2::from_shape_vec((num_samples, 1), y).unwrap().into_dyn());
 
-    // Initialize layers
-    let linear1 = Linear::new(input_dim, hidden_dim);
-    let relu = ReLU::new();
-    let linear2 = Linear::new(hidden_dim, output_dim);
+    (x_tensor, y_tensor)
+}
 
-    // Initialize optimizer
-    let mut optimizer = SGD::new(0.01, 0.9); // Learning rate and momentum
+fn main() -> Result<(), String> {
+    let mut graph = ComputationGraph::new();
 
-    // Training loop
-    for epoch in 0..1000 {
-        // Forward pass
-        let linear1_output = linear1.forward(x.clone());
-        let relu_output = relu.forward(linear1_output);
-        let linear2_output = linear2.forward(relu_output);
+    // Generate linear noise data
+    let (x, y) = generate_linear_noise(100, 2.0, 1.0, 0.1);
 
-        // Compute loss
-        let loss_fn = CrossEntropyLoss::new();
-        let loss = loss_fn.compute(linear2_output.clone(), y.clone());
+    // Create model - 3 Layers and Loss Function
+    let mut layer1 = Dense::new(1, 10, &mut graph);
+    let mut layer2 = Dense::new(10, 10, &mut graph);
+    let mut layer3 = Dense::new(10, 1, &mut graph);
+    let loss_op = MeanSquaredError;
 
-        // Backward pass
-        loss.backward(None); // Start backpropagation from the loss node
+    let _ = layer1.initialize(&mut graph);
+    let _ = layer2.initialize(&mut graph);
+    let _ = layer3.initialize(&mut graph);
 
-        // Update parameters
-        optimizer.step(&[linear1.weight.clone(), linear1.bias.clone(), linear2.weight.clone(), linear2.bias.clone()]);
-
-        // Print loss every 100 epochs
-        if epoch % 100 == 0 {
-            println!("Epoch {}: Loss = {:?}", epoch, loss.value.borrow());
-        }
-    }
-
-    // Final output after training
-    let final_output = linear2.forward(relu.forward(linear1.forward(x.clone())));
-    println!("Final Output: {:?}", final_output.value.borrow());
+    // Forward Pass
+    let output = graph.forward(x)?;
+    let loss = loss_op.forward(&[output.clone(), y.clone()]);
+    // Tensor to printable string
+    output.clone().display();
+    loss.unwrap().display();
+    Ok(())
 }
