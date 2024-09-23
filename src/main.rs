@@ -18,14 +18,14 @@ use std::rc::Rc;
 
 fn main() {
     // define variables to train
-    let x = Tensor::new(&[2], &[1.0, 2.0], "f32").unwrap();
+    let _x = Tensor::new(&[2], &[1.0, 2.0], "f32").unwrap();
     let y = Tensor::new(&[2], &[3.0, 4.0], "f32").unwrap(); 
     let variable_y = Variable::from_tensor(3, y, false);
 
-    let w = Variable::from_tensor(1, Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
-    let b = Variable::from_tensor(2, Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
-    let mut optimizer = SGD::new(0.01);
     let mut graph = ComputationGraph::new();
+    let w = graph.create_variable(Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
+    let b = graph.create_variable(Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
+    let mut optimizer = SGD::new(0.01);
 
     // create linear node
     let linear_op = Rc::new(Linear { w: w.clone(), b: b.clone() });
@@ -40,8 +40,8 @@ fn main() {
     let relu_node = graph.add_node(relu_op, vec![&linear_node]);
 
     // have relu go to a new linear node that takes in M and c as weights and biases
-    let m = Variable::from_tensor(3, Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
-    let c = Variable::from_tensor(4, Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
+    let m = graph.create_variable(Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
+    let c = graph.create_variable(Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
     let linear_op2 = Rc::new(Linear { w: m.clone(), b: c.clone() });
     let linear_node2 = graph.add_node(linear_op2, vec![&relu_node, &m, &c]);
 
@@ -72,6 +72,6 @@ fn main() {
         graph.backward(&add_node2.node).unwrap();
 
         // update weights
-        optimizer.step(&mut graph);
+        let _ =optimizer.step(&mut graph);
     }
 }
