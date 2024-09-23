@@ -1516,8 +1516,7 @@ impl MulAssign for Tensor {
             (TensorData::F32(a), TensorData::F64(b)) => {
                 let scalar = b.borrow()[IxDyn(&[])] as f32;
                 *a.borrow_mut() *= scalar;
-            },
-            _ => panic!("MulAssign requires compatible data types."),
+            }
         }
     }
 }

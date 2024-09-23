@@ -70,6 +70,36 @@ impl Op for Subtract {
 }
 
 #[derive(Debug, Clone)]
+pub struct Linear;
+impl Op for Linear {
+    fn forward(&self, inputs: &[&Tensor]) -> Result<Tensor, TensorError> {
+        if inputs.len() != 2 {
+            return Err(TensorError::InvalidInputSize("Linear operation requires 2 inputs".to_string()));
+        }
+        Ok(inputs[0] * inputs[1])
+    }
+
+    fn backward(&self, inputs: &[&Tensor], output_gradient: &Tensor) -> Result<Vec<Tensor>, TensorError> {
+        Ok(vec![
+            output_gradient * inputs[1],
+            output_gradient * inputs[0],
+        ])
+    }
+
+    fn name(&self) -> &str {
+        "Linear"
+    }
+
+    fn box_clone(&self) -> Box<dyn Op> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Multiply;
 impl Op for Multiply {
     fn forward(&self, inputs: &[&Tensor]) -> Result<Tensor, TensorError> {
