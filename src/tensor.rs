@@ -242,10 +242,6 @@ impl Tensor {
         }
     }
 
-    pub fn pow_scalar(&self, power: f32) -> Result<Self, TensorError> {
-        self.pow(power)
-    }
-
     pub fn pow_tensor(&self, power: &Tensor) -> Result<Self, TensorError> {
         match (&self.data, &power.data) {
             (TensorData::F32(self_array), TensorData::F32(power_array)) => {
@@ -299,71 +295,6 @@ impl Tensor {
         }
     }
 
-    pub fn log2(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let log2 = array.borrow().mapv(|x| x.log2());
-                Ok(Tensor::new_f32(log2))
-            },
-            TensorData::F64(array) => {
-                let log2 = array.borrow().mapv(|x| x.log2());
-                Ok(Tensor::new_f64(log2))
-            },
-        }
-    }
-
-    pub fn log10(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let log10 = array.borrow().mapv(|x| x.log10());
-                Ok(Tensor::new_f32(log10))
-            },
-            TensorData::F64(array) => {
-                let log10 = array.borrow().mapv(|x| x.log10());
-                Ok(Tensor::new_f64(log10))
-            },
-        }
-    }
-
-    pub fn sin(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let sin = array.borrow().mapv(|x| x.sin());
-                Ok(Tensor::new_f32(sin))
-            },
-            TensorData::F64(array) => {
-                let sin = array.borrow().mapv(|x| x.sin());
-                Ok(Tensor::new_f64(sin))
-            },
-        }
-    }
-
-    pub fn cos(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let cos = array.borrow().mapv(|x| x.cos());
-                Ok(Tensor::new_f32(cos))
-            },
-            TensorData::F64(array) => {
-                let cos = array.borrow().mapv(|x| x.cos());
-                Ok(Tensor::new_f64(cos))
-            },
-        }
-    }
-
-    pub fn tan(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let tan = array.borrow().mapv(|x| x.tan());
-                Ok(Tensor::new_f32(tan))
-            },
-            TensorData::F64(array) => {
-                let tan = array.borrow().mapv(|x| x.tan());
-                Ok(Tensor::new_f64(tan))
-            },
-        }
-    }
-
     pub fn tanh(&self) -> Result<Self, TensorError> {
         match &self.data {
             TensorData::F32(array) => {
@@ -377,45 +308,6 @@ impl Tensor {
         }
     }
 
-    pub fn asin(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let asin = array.borrow().mapv(|x| x.asin());
-                Ok(Tensor::new_f32(asin))
-            },
-            TensorData::F64(array) => {
-                let asin = array.borrow().mapv(|x| x.asin());
-                Ok(Tensor::new_f64(asin))
-            },
-        }
-    }
-
-    pub fn acos(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let acos = array.borrow().mapv(|x| x.acos());
-                Ok(Tensor::new_f32(acos))
-            },
-            TensorData::F64(array) => {
-                let acos = array.borrow().mapv(|x| x.acos());
-                Ok(Tensor::new_f64(acos))
-            },
-        }
-    }
-
-    pub fn atan(&self) -> Result<Self, TensorError> {
-        match &self.data {
-            TensorData::F32(array) => {
-                let atan = array.borrow().mapv(|x| x.atan());
-                Ok(Tensor::new_f32(atan))
-            },
-            TensorData::F64(array) => {
-                let atan = array.borrow().mapv(|x| x.atan());
-                Ok(Tensor::new_f64(atan))
-            },
-        }
-    }   
-    
     pub fn mean(&self, axis: Option<usize>) -> Result<Self, TensorError> {
         match &self.data {
             TensorData::F32(array) => {
@@ -1692,22 +1584,6 @@ mod tests {
         let log = tensor.log().unwrap();
         let expected = arr2(&[[0.0, 0.693147181], [1.098612289, 1.386294361]]);
         assert_relative_eq!(log.get_f32().unwrap().borrow().as_slice().unwrap(), expected.as_slice().unwrap(), epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_sin_cos_tan() {
-        let tensor = Tensor::new_f32(arr1(&[0.0, std::f32::consts::PI / 2.0, std::f32::consts::PI]).into_dyn());
-        let sin = tensor.sin().unwrap();
-        let cos = tensor.cos().unwrap();
-        let tan = tensor.tan().unwrap();
-        
-        let expected_sin = arr1(&[0.0, 1.0, 0.0]);
-        let expected_cos = arr1(&[1.0, 0.0, -1.0]);
-        let expected_tan = arr1(&[0.0, f32::INFINITY, 0.0]);
-        
-        assert_relative_eq!(sin.get_f32().unwrap().borrow().as_slice().unwrap(), expected_sin.as_slice().unwrap(), epsilon = 1e-6);
-        assert_relative_eq!(cos.get_f32().unwrap().borrow().as_slice().unwrap(), expected_cos.as_slice().unwrap(), epsilon = 1e-6);
-        assert_relative_eq!(tan.get_f32().unwrap().borrow().as_slice().unwrap(), expected_tan.as_slice().unwrap(), epsilon = 1e-6);
     }
 
     #[test]
