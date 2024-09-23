@@ -1,34 +1,26 @@
 use crate::tensor::{Tensor, TensorError};
 use crate::variable::Variable;
 use crate::graph::ComputationGraph;
-use crate::op::{Conv2D, Add, MatMul, Sum, Transpose, Identity};
+use crate::op::{Add, MatMul, ReLU};
 use std::rc::Rc;
 
 pub trait Layer {
     fn forward(&self, input: &Variable, graph: &mut ComputationGraph) -> Result<Variable, TensorError>;
-    fn backward(&self, input: &Variable, output_grad: &Variable, graph: &mut ComputationGraph) -> Result<(Variable, Vec<Variable>), TensorError>;
-    fn initialize(&mut self, graph: &mut ComputationGraph) -> Result<(), TensorError>;
     fn parameters(&self) -> Vec<Variable>;
-    fn update_parameters(&mut self, grads: &[Variable], learning_rate: f32) -> Result<(), TensorError>;
+    fn initialize(&mut self, graph: &mut ComputationGraph) -> Result<(), TensorError>;
 }
 
 pub struct Dense {
-    weights: Variable,
-    bias: Variable,
-    input_size: usize,
-    output_size: usize,
+    pub weights: Variable,
+    pub bias: Variable,
+    pub activation: Option<Rc<dyn Fn(&Variable, &mut ComputationGraph) -> Result<Variable, TensorError>>>,
 }
 
 impl Dense {
-    pub fn new(input_size: usize, output_size: usize, graph: &mut ComputationGraph) -> Self {
-        let weights = graph.add_variable(Tensor::zeros(&[input_size, output_size]).unwrap(), true);
-        let bias = graph.add_variable(Tensor::zeros(&[output_size]).unwrap(), true);
-        Self {
-            weights,
-            bias,
-            input_size,
-            output_size,
-        }
+    pub fn new(input_size: usize, output_size: usize, activation: Option<Rc<dyn Fn(&Variable, &mut ComputationGraph) -> Result<Variable, TensorError>>>) -> Self {
+        let weights = Variable::from_tensor(0, Tensor::randn(&[input_size, output_size], 0.0, 0.01).unwrap(), true);
+        let bias = Variable::from_tensor(1, Tensor::zeros(&[output_size, 1], "f32").unwrap(), true);
+        Dense { weights, bias, activation }
     }
 }
 
@@ -37,55 +29,32 @@ impl Layer for Dense {
         let matmul_op = Rc::new(MatMul);
         let add_op = Rc::new(Add);
         
-        let matmul_node = graph.add_node(matmul_op, vec![input.node.clone(), self.weights.node.clone()]);
-        let output_node = graph.add_node(add_op, vec![matmul_node, self.bias.node.clone()]);
+        let matmul_node = graph.add_node(matmul_op, vec![input, &self.weights]);
+        let output_node = graph.add_node(add_op, vec![&matmul_node, &self.bias]);
         
-        Ok(Variable { node: output_node, requires_grad: true })
-    }
-
-    fn backward(&self, input: &Variable, output_grad: &Variable, graph: &mut ComputationGraph) -> Result<(Variable, Vec<Variable>), TensorError> {
-        let matmul_op = Rc::new(MatMul);
-        let transpose_op = Rc::new(Transpose);
-        let sum_op = Rc::new(Sum);
+        let mut output = output_node;
         
-        let transposed_input = graph.add_node(transpose_op.clone(), vec![input.node.clone()]);
-        let weight_grad_node = graph.add_node(matmul_op.clone(), vec![transposed_input, output_grad.node.clone()]);
+        if let Some(activation) = &self.activation {
+            output = activation(&output, graph)?;
+        }
         
-        let transposed_weights = graph.add_node(transpose_op, vec![self.weights.node.clone()]);
-        let input_grad_node = graph.add_node(matmul_op, vec![output_grad.node.clone(), transposed_weights]);
-        
-        let bias_grad_node = graph.add_node(sum_op, vec![output_grad.node.clone()]);
-
-        let input_grad = Variable::new(input_grad_node.borrow().id(), Rc::new(Identity), true);
-        let weight_grad = Variable::new(weight_grad_node.borrow().id(), Rc::new(Identity), true);
-        let bias_grad = Variable::new(bias_grad_node.borrow().id(), Rc::new(Identity), true);
-
-        Ok((input_grad, vec![weight_grad, bias_grad]))
-    }
-
-    fn initialize(&mut self, _graph: &mut ComputationGraph) -> Result<(), TensorError> {
-        let weight_stddev = (2.0 / (self.input_size + self.output_size) as f32).sqrt();
-        let weight_data = Tensor::randn(&[self.input_size, self.output_size], 0.0, weight_stddev);
-        self.weights.set_value(weight_data?);
-
-        let bias_data = Tensor::zeros(&[self.output_size])?;
-        self.bias.set_value(bias_data);
-
-        Ok(())
+        Ok(output)
     }
 
     fn parameters(&self) -> Vec<Variable> {
         vec![self.weights.clone(), self.bias.clone()]
     }
 
-    fn update_parameters(&mut self, grads: &[Variable], learning_rate: f32) -> Result<(), TensorError> {
-        if grads.len() != 2 {
-            return Err(TensorError::InvalidInputSize("Expected gradients for weights and bias".to_string()));
-        }
+    fn initialize(&mut self, _graph: &mut ComputationGraph) -> Result<(), TensorError> {
+        let weight_shape = self.weights.node.borrow().value().unwrap().shape();
+        let weight_stddev = (2.0 / (weight_shape[0] + weight_shape[1]) as f32).sqrt();
+        let weight_tensor = Tensor::randn(&weight_shape, 0.0, weight_stddev)?;
+        self.weights.set_value(weight_tensor);
 
-        self.weights.update(&grads[0], learning_rate)?;
-        self.bias.update(&grads[1], learning_rate)?;
-
+        let bias_shape = self.bias.node.borrow().value().unwrap().shape();
+        let bias_tensor = Tensor::zeros(&bias_shape, "f32")?;
+        self.bias.set_value(bias_tensor);
+        
         Ok(())
     }
 }
@@ -109,23 +78,8 @@ impl Layer for Sequential {
         Ok(output)
     }
 
-    fn backward(&self, input: &Variable, output_grad: &Variable, graph: &mut ComputationGraph) -> Result<(Variable, Vec<Variable>), TensorError> {
-        let mut grad = output_grad.clone();
-        let mut all_grads = Vec::new();
-        let mut layer_inputs = vec![input.clone()];
-
-        for layer in &self.layers {
-            let output = layer.forward(layer_inputs.last().unwrap(), graph)?;
-            layer_inputs.push(output);
-        }
-
-        for (layer, layer_input) in self.layers.iter().zip(layer_inputs.iter()).rev() {
-            let (input_grad, param_grads) = layer.backward(layer_input, &grad, graph)?;
-            grad = input_grad;
-            all_grads.extend(param_grads);
-        }
-
-        Ok((grad, all_grads))
+    fn parameters(&self) -> Vec<Variable> {
+        self.layers.iter().flat_map(|layer| layer.parameters()).collect()
     }
 
     fn initialize(&mut self, graph: &mut ComputationGraph) -> Result<(), TensorError> {
@@ -134,117 +88,185 @@ impl Layer for Sequential {
         }
         Ok(())
     }
-
-    fn parameters(&self) -> Vec<Variable> {
-        self.layers.iter().flat_map(|layer| layer.parameters()).collect()
-    }
-
-    fn update_parameters(&mut self, grads: &[Variable], learning_rate: f32) -> Result<(), TensorError> {
-        let mut grad_index = 0;
-        for layer in &mut self.layers {
-            let param_count = layer.parameters().len();
-            let layer_grads = &grads[grad_index..grad_index + param_count];
-            layer.update_parameters(layer_grads, learning_rate)?;
-            grad_index += param_count;
-        }
-        Ok(())
-    }
 }
 
-// Similar refactoring should be applied to Conv2DLayer, MaxPool2DLayer, FlattenLayer, ReLULayer, and LossLayer
-// Here's an example for Conv2DLayer:
-
-pub struct Conv2DLayer {
-    weights: Variable,
-    bias: Variable,
-    kernel: Tensor
+// Activation functions
+pub fn relu(x: &Variable, graph: &mut ComputationGraph) -> Result<Variable, TensorError> {
+    let relu_op = Rc::new(ReLU);
+    let output_node = graph.add_node(relu_op, vec![x]);
+    Ok(output_node)
 }
 
-impl Conv2DLayer {
-    pub fn new(in_channels: usize, out_channels: usize, kernel: Tensor, graph: &mut ComputationGraph) -> Self {
-        let kernel_shape = kernel.shape();
-        if kernel_shape.len() != 2 {
-            panic!("Kernel must be a 2D tensor");
-        }
-        let kernel_size = (kernel_shape[0], kernel_shape[1]);
-        let weights = graph.add_variable(Tensor::randn(&[out_channels, in_channels, kernel_size.0, kernel_size.1], 0.0, 0.05).unwrap(), true);
-        let bias = graph.add_variable(Tensor::zeros(&[out_channels]).unwrap(), true);
-        
-        Conv2DLayer {
-            weights,
-            bias,
-            kernel
-        }
-    }
+pub fn sigmoid(x: &Variable, graph: &mut ComputationGraph) -> Result<Variable, TensorError> {
+    let sigmoid_tensor = x.to_tensor().sigmoid()?;
+    Ok(graph.create_variable(sigmoid_tensor, x.requires_grad))
 }
 
-impl Layer for Conv2DLayer {
-    fn forward(&self, input: &Variable, graph: &mut ComputationGraph) -> Result<Variable, TensorError> {
-        let conv_op = Rc::new(Conv2D::new(self.kernel.clone()));
-        let add_op = Rc::new(Add);
-        
-        let conv_output = graph.add_node(conv_op, vec![input.node.clone(), self.weights.node.clone()]);
-        let output = graph.add_node(add_op, vec![conv_output, self.bias.node.clone()]);
-        
-        let output_value = output.borrow().value().unwrap().clone();
-        let output_id = output.borrow().id();
-        Ok(Variable::from_tensor(output_id, output_value, true))
+pub fn tanh(x: &Variable, graph: &mut ComputationGraph) -> Result<Variable, TensorError> {
+    let tanh_tensor = x.to_tensor().tanh()?;
+    Ok(graph.create_variable(tanh_tensor, x.requires_grad))
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tensor::Tensor;
+    use crate::graph::ComputationGraph;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_dense_layer_creation() {
+        let dense = Dense::new(10, 5, None);
+        assert_eq!(dense.weights.node.borrow().value().unwrap().shape(), vec![10, 5]);
+        assert_eq!(dense.bias.node.borrow().value().unwrap().shape(), vec![5, 1]);
     }
 
-    fn backward(&self, input: &Variable, output_grad: &Variable, graph: &mut ComputationGraph) -> Result<(Variable, Vec<Variable>), TensorError> {
-        let conv_op = Rc::new(Conv2D::new(self.kernel.clone()));
-        let transpose_op = Rc::new(Transpose);
-        let sum_op = Rc::new(Sum);
+    #[test]
+    fn test_dense_layer_forward() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let dense = Dense::new(3, 2, None);
+        let input = Variable::from_tensor(0, Tensor::new(&[3, 1], &[1.0, 2.0, 3.0], "f32")?, true);
         
-        let transposed_input = graph.add_node(transpose_op.clone(), vec![input.node.clone()]);
-        let weight_grad = graph.add_node(conv_op.clone(), vec![transposed_input, output_grad.node.clone()]);
-
-        let transposed_weights = graph.add_node(transpose_op, vec![self.weights.node.clone()]);
-        let input_grad = graph.add_node(conv_op, vec![output_grad.node.clone(), transposed_weights]);
+        let output = dense.forward(&input, &mut graph)?;
+        assert_eq!(output.node.borrow().value().unwrap().shape(), vec![2, 1]);
         
-        let bias_grad = graph.add_node(sum_op, vec![output_grad.node.clone()]);
-
-        let input_grad_value = input_grad.borrow().value().unwrap().clone();
-        let weight_grad_value = weight_grad.borrow().value().unwrap().clone();
-        let bias_grad_value = bias_grad.borrow().value().unwrap().clone();
-        let input_grad_var = Variable::from_tensor(input_grad.borrow().id(), input_grad_value, true);
-        let weight_grad_var = Variable::from_tensor(weight_grad.borrow().id(), weight_grad_value, true);
-        let bias_grad_var = Variable::from_tensor(bias_grad.borrow().id(), bias_grad_value, true);
-
-        Ok((
-            input_grad_var,
-            vec![weight_grad_var, bias_grad_var]
-        ))
-    }
-
-    fn initialize(&mut self, _graph: &mut ComputationGraph) -> Result<(), TensorError> {
-        let weight_shape = self.weights.value().unwrap().shape().to_vec();
-        let fan_in = weight_shape[1] * weight_shape[2] * weight_shape[3];
-        let fan_out = weight_shape[0] * weight_shape[2] * weight_shape[3];
-        let weight_stddev = (2.0 / (fan_in + fan_out) as f32).sqrt();
-        
-        let weight_data = Tensor::randn(&weight_shape, 0.0, weight_stddev);
-        self.weights.set_value(weight_data.unwrap());
-
-        let bias_shape = self.bias.value().unwrap().shape().to_vec();
-        let bias_data = Tensor::zeros(&bias_shape)?;
-        self.bias.set_value(bias_data);
-
         Ok(())
     }
 
-    fn parameters(&self) -> Vec<Variable> {
-        vec![self.weights.clone(), self.bias.clone()]
+    #[test]
+    fn test_dense_layer_with_activation() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let dense = Dense::new(3, 2, Some(Rc::new(relu)));
+        let input = Variable::from_tensor(0, Tensor::new(&[3, 1], &[1.0, 2.0, 3.0], "f32")?, true);
+        
+        let output = dense.forward(&input, &mut graph)?;
+        assert_eq!(output.node.borrow().value().unwrap().shape(), vec![2, 1]);
+        
+        // Ensure all values are non-negative (ReLU property)
+        let output_tensor = output.node.borrow().value().unwrap().to_array().unwrap(); // Store in a variable
+        for value in output_tensor.iter() {
+            assert!(*value >= 0.0);
+        }
+        
+        Ok(())
     }
 
-    fn update_parameters(&mut self, grads: &[Variable], learning_rate: f32) -> Result<(), TensorError> {
-        if grads.len() != 2 {
-            return Err(TensorError::InvalidInputSize("Expected gradients for weights and bias".to_string()));
-        }
+    #[test]
+    fn test_dense_layer_parameters() {
+        let dense = Dense::new(3, 2, None);
+        let params = dense.parameters();
+        assert_eq!(params.len(), 2);
+    }
 
-        self.weights.update(&grads[0], learning_rate)?;
-        self.bias.update(&grads[1], learning_rate)?;
+    #[test]
+    fn test_dense_layer_initialize() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let mut dense = Dense::new(3, 2, None);
+        dense.initialize(&mut graph)?;
+        
+        let weight_shape = dense.weights.node.borrow().value().unwrap().shape();
+        assert_eq!(weight_shape, vec![3, 2]);
+        
+        let bias_shape = dense.bias.node.borrow().value().unwrap().shape();
+        assert_eq!(bias_shape, vec![2, 1]);
+        
+        Ok(())
+    }
 
+    #[test]
+    fn test_sequential_layer_creation() {
+        let layers: Vec<Box<dyn Layer>> = vec![
+            Box::new(Dense::new(10, 5, None)),
+            Box::new(Dense::new(5, 2, None)),
+        ];
+        let sequential = Sequential::new(layers);
+        assert_eq!(sequential.layers.len(), 2);
+    }
+
+    #[test]
+    fn test_sequential_layer_forward() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let layers: Vec<Box<dyn Layer>> = vec![
+            Box::new(Dense::new(3, 2, Some(Rc::new(relu)))),
+            Box::new(Dense::new(2, 1, None)),
+        ];
+        let sequential = Sequential::new(layers);
+        let input = Variable::from_tensor(0, Tensor::new(&[3, 1], &[1.0, 2.0, 3.0], "f32")?, true);
+        
+        let output = sequential.forward(&input, &mut graph)?;
+        assert_eq!(output.node.borrow().value().unwrap().shape(), vec![1, 1]);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_sequential_layer_parameters() {
+        let layers: Vec<Box<dyn Layer>> = vec![
+            Box::new(Dense::new(3, 2, None)),
+            Box::new(Dense::new(2, 1, None)),
+        ];
+        let sequential = Sequential::new(layers);
+        let params = sequential.parameters();
+        assert_eq!(params.len(), 4); // 2 weights + 2 biases
+    }
+
+    #[test]
+    fn test_sequential_layer_initialize() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let layers: Vec<Box<dyn Layer>> = vec![
+            Box::new(Dense::new(3, 2, None)),
+            Box::new(Dense::new(2, 1, None)),
+        ];
+        let mut sequential = Sequential::new(layers);
+        sequential.initialize(&mut graph)?;
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_relu_activation() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let input = Variable::from_tensor(0, Tensor::new(&[3, 1], &[-1.0, 0.0, 1.0], "f32")?, true);
+        
+        let output = relu(&input, &mut graph)?;
+        let output_tensor = output.node.borrow().value().unwrap().to_array().unwrap();
+        
+        assert_relative_eq!(output_tensor[0], 0.0);
+        assert_relative_eq!(output_tensor[1], 0.0);
+        assert_relative_eq!(output_tensor[2], 1.0);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_sigmoid_activation() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let input = Variable::from_tensor(0, Tensor::new(&[3, 1], &[-1.0, 0.0, 1.0], "f32")?, true);
+        
+        let output = sigmoid(&input, &mut graph)?;
+        let output_tensor = output.node.borrow().value().unwrap().to_array().unwrap();
+        
+        assert_relative_eq!(output_tensor[0], 0.26894142, epsilon = 1e-6);
+        assert_relative_eq!(output_tensor[1], 0.5, epsilon = 1e-6);
+        assert_relative_eq!(output_tensor[2], 0.7310586, epsilon = 1e-6);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_tanh_activation() -> Result<(), TensorError> {
+        let mut graph = ComputationGraph::new();
+        let input = Variable::from_tensor(0, Tensor::new(&[3, 1], &[-1.0, 0.0, 1.0], "f32")?, true);
+        
+        let output = tanh(&input, &mut graph)?;
+        let output_tensor = output.node.borrow().value().unwrap().to_array().unwrap();
+        
+        assert_relative_eq!(output_tensor[0], -0.7615942, epsilon = 1e-6);
+        assert_relative_eq!(output_tensor[1], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(output_tensor[2], 0.7615942, epsilon = 1e-6);
+        
         Ok(())
     }
 }

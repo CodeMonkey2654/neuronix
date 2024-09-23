@@ -1,54 +1,99 @@
-pub mod layer;
-pub mod optimizer;
-pub mod op;
 pub mod tensor;
+pub mod graph;
 pub mod variable;
 pub mod node;
-pub mod graph;
-use crate::tensor::Tensor;
-use crate::variable::Variable;
-use std::rc::Rc;
-use crate::layer::{Layer, Sequential, Dense};
+pub mod op;
+pub mod layer;
+pub mod optimizer;
+use crate::layer::{Layer, Dense};
 use crate::optimizer::{Optimizer, SGD};
-use crate::op::{Op, MeanSquaredError};
+use crate::op::MeanSquaredError;
 use crate::graph::ComputationGraph;
-use ndarray::Array2;
-use rand::Rng;
+use crate::tensor::Tensor;
+use std::rc::Rc;
+use crate::tensor::TensorError;
+use std::error::Error;
+use std::fmt;
 
-fn generate_linear_noise(num_samples: usize, slope: f32, intercept: f32, noise_std: f32) -> (Tensor, Tensor) {
-    let mut rng = rand::thread_rng();
-    let x: Vec<f32> = (0..num_samples).map(|i| i as f32 / num_samples as f32).collect();
-    let y: Vec<f32> = x.iter()
-        .map(|&xi| slope * xi + intercept + rng.gen_range(-noise_std..noise_std))
-        .collect();
+// Wrapper error type
+#[derive(Debug)]
+struct WrapperError(TensorError);
 
-    let x_tensor = Tensor::new_f32(Array2::from_shape_vec((num_samples, 1), x).unwrap().into_dyn());
-    let y_tensor = Tensor::new_f32(Array2::from_shape_vec((num_samples, 1), y).unwrap().into_dyn());
-
-    (x_tensor, y_tensor)
+impl fmt::Display for WrapperError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
 }
 
-fn main() -> Result<(), String> {
+impl Error for WrapperError {}
+
+impl From<TensorError> for WrapperError {
+    fn from(err: TensorError) -> Self {
+        WrapperError(err)
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Define the true linear function: y = 2x + 1
+    let true_weight = 2.0;
+    let true_bias = 1.0;
+
+    // Create a computation graph
     let mut graph = ComputationGraph::new();
 
-    // Generate linear noise data
-    let (x, y) = generate_linear_noise(100, 2.0, 1.0, 0.1);
+    // Initialize the linear layer
+    let mut linear_layer = Dense::new(1, 1, None);
+    let _ = linear_layer.initialize(&mut graph);
 
-    // Create model - 3 Layers and Loss Function
-    let mut layer1 = Dense::new(1, 10, &mut graph);
-    let mut layer2 = Dense::new(10, 10, &mut graph);
-    let mut layer3 = Dense::new(10, 1, &mut graph);
-    let loss_op = MeanSquaredError;
+    // Create an optimizer
+    let mut optimizer = SGD::new(0.01); // Learning rate of 0.01
 
-    let _ = layer1.initialize(&mut graph);
-    let _ = layer2.initialize(&mut graph);
-    let _ = layer3.initialize(&mut graph);
+    // Training loop
+    let num_epochs = 1000;
+    let batch_size = 32;
 
-    // Forward Pass
-    let output = graph.forward(x)?;
-    let loss = loss_op.forward(&[output.clone(), y.clone()]);
-    // Tensor to printable string
-    output.clone().display();
-    loss.unwrap().display();
+    for epoch in 0..num_epochs {
+        // Generate random input data
+        let x = Tensor::randn(&[batch_size, 1], 0.0, 1.0).map_err(WrapperError)?;
+        let x_var = graph.create_variable(x.clone(), false);
+
+        // Compute true y values
+        let y_true = &(&x * &Tensor::scalar(true_weight)) + &Tensor::scalar(true_bias);
+        let y_true_var = graph.create_variable(y_true.clone(), false);
+
+        // Forward pass
+        let y_pred = linear_layer.forward(&x_var, &mut graph);
+        // Compute loss
+        let mse_op = Rc::new(MeanSquaredError);
+        let loss_node = graph.add_node(mse_op, vec![&y_pred.unwrap(), &y_true_var]);
+        let loss = graph.forward(&loss_node.node);
+
+        // Backward pass
+        let _ = graph.backward(&loss_node.node);
+
+        // Update parameters
+        optimizer.step(&mut graph)?;
+
+        // Zero gradients
+        optimizer.zero_grad();
+
+        // Print progress
+        if (epoch + 1) % 100 == 0 {
+            println!("Epoch [{}/{}], Loss: {:.4}", epoch + 1, num_epochs, loss.unwrap().to_scalar().unwrap());
+        }
+    }
+
+    // Evaluate the trained model
+    let test_x = Tensor::randn(&[1, 1], 0.0, 1.0).unwrap();
+    let test_x_var = graph.create_variable(test_x.clone(), false);
+    let test_y_pred = linear_layer.forward(&test_x_var, &mut graph).unwrap();
+
+    println!("True function: y = {}x + {}", true_weight, true_bias);
+    println!("Learned function: y = {:.4}x + {:.4}", 
+             linear_layer.weights.value().unwrap().to_scalar().unwrap(),
+             linear_layer.bias.value().unwrap().to_scalar().unwrap());
+    println!("Test input: {:.4}", test_x.to_scalar().unwrap());
+    println!("Predicted output: {:.4}", test_y_pred.value().unwrap().to_scalar().unwrap());
+
     Ok(())
 }
