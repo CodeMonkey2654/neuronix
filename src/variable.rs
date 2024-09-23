@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use crate::node::Node;
 use crate::tensor::Tensor;
 use crate::op::Op;
-use crate::op::Identity;
 use crate::tensor::TensorError;
 use std::any::Any;
 
@@ -22,7 +21,7 @@ impl Variable {
     }
 
     pub fn from_tensor(id: usize, tensor: Tensor, requires_grad: bool) -> Self {
-        let node = Node::new(id, Rc::new(Identity));
+        let node = Node::new(id, Rc::new(NoOp));
         node.borrow_mut().set_value(tensor);
         Self {
             node,
@@ -75,6 +74,34 @@ impl Variable {
     }
 }
 
+#[derive(Debug, Clone)]
+struct NoOp;
+
+impl Op for NoOp {
+    fn forward(&self, inputs: &[&Tensor]) -> Result<Tensor, TensorError> {
+        if inputs.len() != 1 {
+            return Err(TensorError::InvalidInputSize("NoOp operation requires 1 input".to_string()));
+        }
+        Ok(inputs[0].clone())
+    }
+
+    fn backward(&self, _inputs: &[&Tensor], output_gradient: &Tensor) -> Result<Vec<Tensor>, TensorError> {
+        Ok(vec![output_gradient.clone()])
+    }
+
+    fn name(&self) -> &str {
+        "NoOp"
+    }
+
+    fn box_clone(&self) -> Box<dyn Op> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_variable_new() {
-        let op = Rc::new(Identity);
+        let op = Rc::new(NoOp);
         let var = Variable::new(1, op, true);
         assert_eq!(var.id(), 1);
         assert!(var.requires_grad);
@@ -109,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_set_value() {
-        let var = Variable::new(4, Rc::new(Identity), true);
+        let var = Variable::new(4, Rc::new(NoOp), true);
         let tensor = Tensor::scalar(7.0);
         var.set_value(tensor.clone());
         assert_eq!(var.value().unwrap(), tensor);
@@ -124,8 +151,8 @@ mod tests {
 
     #[test]
     fn test_gradient() {
-        let var_with_grad = Variable::new(6, Rc::new(Identity), true);
-        let var_without_grad = Variable::new(7, Rc::new(Identity), false);
+        let var_with_grad = Variable::new(6, Rc::new(NoOp), true);
+        let var_without_grad = Variable::new(7, Rc::new(NoOp), false);
         
         assert!(var_with_grad.gradient().is_none());
         assert!(var_without_grad.gradient().is_none());
@@ -173,13 +200,13 @@ mod tests {
 
     #[test]
     fn test_id() {
-        let var = Variable::new(14, Rc::new(Identity), true);
+        let var = Variable::new(14, Rc::new(NoOp), true);
         assert_eq!(var.id(), 14);
     }
 
     #[test]
     fn test_as_any() {
-        let var = Variable::new(15, Rc::new(Identity), true);
+        let var = Variable::new(15, Rc::new(NoOp), true);
         let any_var = var.as_any();
         assert!(any_var.is::<Variable>());
     }

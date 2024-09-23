@@ -4,52 +4,74 @@ mod graph;
 mod op;
 mod optimizer;
 mod node;
+mod regularization;
+mod loss;
 
-use std::rc::Rc;
 use crate::tensor::Tensor;
 use crate::graph::ComputationGraph;
-use crate::op::{Add, Multiply, Linear};
+use crate::op::{Add, Linear, ReLU, Softmax};
+use crate::variable::Variable;
+use crate::regularization::L2Regularization;
+use crate::loss::MeanSquaredError;
 use crate::optimizer::{Optimizer, SGD};
+use std::rc::Rc;
 
 fn main() {
-    // Create a computation graph
+    // define variables to train
+    let x = Tensor::new(&[2], &[1.0, 2.0], "f32").unwrap();
+    let y = Tensor::new(&[2], &[3.0, 4.0], "f32").unwrap(); 
+    let variable_y = Variable::from_tensor(3, y, false);
+
+    let w = Variable::from_tensor(1, Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
+    let b = Variable::from_tensor(2, Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
+    let mut optimizer = SGD::new(0.01);
     let mut graph = ComputationGraph::new();
 
-    // Create input variables
-    let x = graph.create_variable(Tensor::new(&[1, 1], vec![1.0].as_slice(), "f32").unwrap(), true);
-    let y_true = graph.create_variable(Tensor::new(&[1, 1], vec![2.0].as_slice(), "f32").unwrap(), true);
+    // create linear node
+    let linear_op = Rc::new(Linear { w: w.clone(), b: b.clone() });
+    let linear_node = graph.add_node(linear_op, vec![&w, &b]);
 
-    // Create weights and bias
-    let w = graph.create_variable(Tensor::new(&[1, 1], vec![0.5].as_slice(), "f32").unwrap(), true);
-    let b = graph.create_variable(Tensor::new(&[1], vec![0.0].as_slice(), "f32").unwrap(), true);
+    // have w go to regularization
+    let l2_reg_op = Rc::new(L2Regularization { lambda: 0.01 });
+    let reg_node = graph.add_node(l2_reg_op, vec![&w]);
 
-    // Create a linear operation
-    let linear_op = Rc::new(Linear);
-    let y_pred = graph.add_node_with_variables(linear_op, vec![&x], vec![w.clone(), b.clone()]);
+    // have linear go to relu
+    let relu_op = Rc::new(ReLU);
+    let relu_node = graph.add_node(relu_op, vec![&linear_node]);
 
-    // Define loss function (mean squared error)
-    let diff = graph.add_node(Rc::new(Add), vec![&y_pred, &y_true]);
-    let loss = graph.add_node(Rc::new(Multiply), vec![&diff, &diff]);
+    // have relu go to a new linear node that takes in M and c as weights and biases
+    let m = Variable::from_tensor(3, Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
+    let c = Variable::from_tensor(4, Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
+    let linear_op2 = Rc::new(Linear { w: m.clone(), b: c.clone() });
+    let linear_node2 = graph.add_node(linear_op2, vec![&relu_node, &m, &c]);
 
-    // Create an optimizer
-    let mut optimizer = SGD::new(0.01);
+    // have linear go to softmax and M go to regularization again (l2)
+    let l2_reg_op2 = Rc::new(L2Regularization { lambda: 0.01 });
+    let reg_node2 = graph.add_node(l2_reg_op2, vec![&m]);
+    let softmax_op = Rc::new(Softmax);
+    let softmax_node = graph.add_node(softmax_op, vec![&linear_node2]);
 
-    // Training loop
-    for _ in 0..100 {
-        // Forward pass
-        graph.forward(&loss.node).unwrap();
+    // have both regularization nodes go to Add or sum
+    let add_op = Rc::new(Add);
+    let add_node = graph.add_node(add_op.clone(), vec![&reg_node, &reg_node2]);
 
-        // Backward pass
-        graph.backward(&loss.node).unwrap();
+    // have softmax go to MSE
+    let mse_op = Rc::new(MeanSquaredError);
+    let mse_node = graph.add_node(mse_op, vec![&softmax_node, &variable_y]);
 
-        // Update weights and bias
-        optimizer.step(&mut graph).unwrap();
+    // add regularization outputs and loss through add
+    let add_node2 = graph.add_node(add_op, vec![&add_node, &mse_node]);
 
-        // Zero gradients
-        optimizer.zero_grad();
+    // training loop
+    for epoch in 0..100 {
+        // forward pass
+        let result = graph.forward(&add_node2.node).unwrap();
+        println!("Epoch {}: Loss: {:?}", epoch, result);
+
+        // backward pass
+        graph.backward(&add_node2.node).unwrap();
+
+        // update weights
+        optimizer.step(&mut graph);
     }
-
-    // Print final weights and bias
-    println!("Final weights: {:?}", w.value().unwrap());
-    println!("Final bias: {:?}", b.value().unwrap());
 }

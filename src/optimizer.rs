@@ -199,13 +199,13 @@ mod tests {
     use crate::tensor::Tensor;
     use crate::variable::Variable;
     use crate::graph::ComputationGraph;
-    use crate::op::{Identity, Op};
+    use crate::op::NoOp;
 
     fn create_test_graph() -> ComputationGraph {
         let mut graph = ComputationGraph::new();
         let var1 = Variable::from_tensor(0, Tensor::new(&[3], &[1.0, 2.0, 3.0], "f32").unwrap(), true);
         let var2 = Variable::from_tensor(1, Tensor::new(&[3], &[4.0, 5.0, 6.0], "f32").unwrap(), true);
-        graph.add_node_with_variables(std::rc::Rc::new(Identity), vec![&var1, &var2], vec![var1.clone(), var2.clone()]);
+        graph.add_node_with_variables(std::rc::Rc::new(NoOp), vec![&var1, &var2], vec![var1.clone(), var2.clone()]);
         graph
     }
 
@@ -353,7 +353,7 @@ mod tests {
         
         // Create a variable without a value
         let invalid_var = Variable::from_tensor(0, Tensor::zeros(&[3], "f32").unwrap(), true);
-        graph.add_node_with_variables(std::rc::Rc::new(Identity), vec![&invalid_var], vec![invalid_var.clone()]);
+        graph.add_node_with_variables(std::rc::Rc::new(NoOp), vec![&invalid_var], vec![invalid_var.clone()]);
         
         set_gradients(&mut graph);
         
@@ -365,7 +365,7 @@ mod tests {
     fn test_adam_convergence() {
         let mut graph = ComputationGraph::new();
         let var = Variable::from_tensor(0, Tensor::new(&[1], &[1.0], "f32").unwrap(), true);
-        graph.add_node_with_variables(std::rc::Rc::new(Identity), vec![&var], vec![var.clone()]);
+        graph.add_node_with_variables(std::rc::Rc::new(NoOp), vec![&var], vec![var.clone()]);
         
         let mut optimizer = Adam::new(0.1, 0.9, 0.999, 1e-8);
         
