@@ -1,77 +1,39 @@
 mod tensor;
-mod variable;
-mod graph;
-mod op;
+mod layer;
 mod optimizer;
-mod node;
-mod regularization;
-mod loss;
+mod neural_network;
 
 use crate::tensor::Tensor;
-use crate::graph::ComputationGraph;
-use crate::op::{Add, Linear, ReLU, Softmax};
-use crate::variable::Variable;
-use crate::regularization::L2Regularization;
-use crate::loss::MeanSquaredError;
-use crate::optimizer::{Optimizer, SGD};
-use std::rc::Rc;
+use crate::layer::DenseLayer;
+use crate::optimizer::{Optimizer, SGDOptimizer};
+use crate::neural_network::NeuralNetwork;
 
 fn main() {
-    // define variables to train
-    let _x = Tensor::new(&[2], &[1.0, 2.0], "f32").unwrap();
-    let y = Tensor::new(&[2], &[3.0, 4.0], "f32").unwrap(); 
-    let variable_y = Variable::from_tensor(3, y, false);
+    let mut model = NeuralNetwork::new(vec![
+        Box::new(DenseLayer::new(3, 4)),
+        Box::new(DenseLayer::new(4, 2)),
+    ]);
 
-    let mut graph = ComputationGraph::new();
-    let w = graph.create_variable(Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
-    let b = graph.create_variable(Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
-    let mut optimizer = SGD::new(0.01);
+    let input = Tensor::new(vec![1.0, 2.0, 3.0], &[1, 3]);
+    let target_output = Tensor::new(vec![0.0, 1.0], &[1, 2]);
 
-    // create linear node
-    let linear_op = Rc::new(Linear { w: w.clone(), b: b.clone() });
-    let linear_node = graph.add_node(linear_op, vec![&w, &b]);
+    // Forward pass
+    let output = model.forward(&input);
+    println!("Output: {:?}", output.data());
 
-    // have w go to regularization
-    let l2_reg_op = Rc::new(L2Regularization { lambda: 0.01 });
-    let reg_node = graph.add_node(l2_reg_op, vec![&w]);
+    // Compute loss (e.g., MSE)
+    let loss = (output.clone() - target_output.clone()).pow(2.0).sum();
 
-    // have linear go to relu
-    let relu_op = Rc::new(ReLU);
-    let relu_node = graph.add_node(relu_op, vec![&linear_node]);
+    // Backward pass (dummy gradient of loss w.r.t. output)
+    let grad_output = output - target_output;
+    model.backward(&input, &grad_output);
 
-    // have relu go to a new linear node that takes in M and c as weights and biases
-    let m = graph.create_variable(Tensor::new(&[2, 2], &[1.0, 1.0, 1.0, 1.0], "f32").unwrap(), true);
-    let c = graph.create_variable(Tensor::new(&[2], &[0.0, 0.0], "f32").unwrap(), true);
-    let linear_op2 = Rc::new(Linear { w: m.clone(), b: c.clone() });
-    let linear_node2 = graph.add_node(linear_op2, vec![&relu_node, &m, &c]);
+    // Get parameters and their gradients
+    let (params, grads) = model.get_params_and_grads();
 
-    // have linear go to softmax and M go to regularization again (l2)
-    let l2_reg_op2 = Rc::new(L2Regularization { lambda: 0.01 });
-    let reg_node2 = graph.add_node(l2_reg_op2, vec![&m]);
-    let softmax_op = Rc::new(Softmax);
-    let softmax_node = graph.add_node(softmax_op, vec![&linear_node2]);
+    // Optimizer step (update parameters using gradients)
+    let mut optimizer = SGDOptimizer::new(0.01);
+    optimizer.step(params.as_mut_slice(), grads.as_slice());
 
-    // have both regularization nodes go to Add or sum
-    let add_op = Rc::new(Add);
-    let add_node = graph.add_node(add_op.clone(), vec![&reg_node, &reg_node2]);
-
-    // have softmax go to MSE
-    let mse_op = Rc::new(MeanSquaredError);
-    let mse_node = graph.add_node(mse_op, vec![&softmax_node, &variable_y]);
-
-    // add regularization outputs and loss through add
-    let add_node2 = graph.add_node(add_op, vec![&add_node, &mse_node]);
-
-    // training loop
-    for epoch in 0..100 {
-        // forward pass
-        let result = graph.forward(&add_node2.node).unwrap();
-        println!("Epoch {}: Loss: {:?}", epoch, result);
-
-        // backward pass
-        graph.backward(&add_node2.node).unwrap();
-
-        // update weights
-        let _ =optimizer.step(&mut graph);
-    }
+    println!("Updated Weights: {:?}", params[0].data());
 }
